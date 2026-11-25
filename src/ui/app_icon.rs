@@ -200,7 +200,7 @@ fn update_menu_icon(accent: u32) {
     };
     let Some(base) = dirs::data_dir() else { return };
     let dir = base.join("icons/hicolor/256x256/apps");
-    let path = dir.join("streamtube.png");
+    let path = dir.join(format!("{}.png", crate::APP_ID));
     if std::fs::read(&path).map(|b| b == png).unwrap_or(false) {
         return;
     }

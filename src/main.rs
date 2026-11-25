@@ -16,6 +16,12 @@ mod updater;
 
 use gpui_kit::*;
 
+/// Fork build: its own identity so the official app and the fork can be
+/// installed side by side and the dock tells the two windows apart.
+pub const APP_ID: &str = "streamtube-fork";
+/// What the window title, dock entry and about box call this build.
+pub const APP_NAME: &str = "Stream Tube Fork";
+
 /// Window placement from the last session (size, position, maximized), or a
 /// centered default sized to the screen.
 fn saved_window_bounds(cx: &App) -> WindowBounds {
@@ -89,10 +95,10 @@ fn main() {
             perf::mark("player init");
             let opts = WindowOptions {
                 // Without this the Wayland/X11 window has no identity, so docks and
-                // taskbars can't match it to streamtube.desktop (StartupWMClass).
-                app_id: Some("streamtube".into()),
+                // taskbars can't match it to streamtube-fork.desktop (StartupWMClass).
+                app_id: Some(APP_ID.into()),
                 window_bounds: Some(saved_window_bounds(cx)),
-                titlebar: Some(TitlebarOptions { title: Some("Stream Tube".into()), appears_transparent: true, ..Default::default() }),
+                titlebar: Some(TitlebarOptions { title: Some(APP_NAME.into()), appears_transparent: true, ..Default::default() }),
                 window_min_size: Some(size(px(720.), px(480.))),
                 ..Default::default()
             };

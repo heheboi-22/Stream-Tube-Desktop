@@ -1073,7 +1073,7 @@ impl AppView {
             self.history.remove(0);
         }
         self.forward.clear();
-        window.set_window_title(&format!("{} - Stream Tube", self.route.title()));
+        window.set_window_title(&format!("{} - {}", self.route.title(), crate::APP_NAME));
         window.focus(&self.focus, cx);
         cx.notify();
     }
@@ -1134,7 +1134,7 @@ impl AppView {
         if cx.global::<UiState>().fullscreen && !matches!(self.route, Route::Watch { .. }) {
             toggle_fullscreen(window, cx);
         }
-        window.set_window_title(&format!("{} - Stream Tube", self.route.title()));
+        window.set_window_title(&format!("{} - {}", self.route.title(), crate::APP_NAME));
         window.focus(&self.focus, cx);
         cx.notify();
     }
@@ -1302,7 +1302,7 @@ impl AppView {
                     self.page = build_page(&self.route.clone(), window, cx);
                 }
             }
-            window.set_window_title(&format!("{} - Stream Tube", self.route.title()));
+            window.set_window_title(&format!("{} - {}", self.route.title(), crate::APP_NAME));
             cx.notify();
         }
     }
@@ -1312,7 +1312,7 @@ impl AppView {
             let cur_r = std::mem::replace(&mut self.route, r);
             let cur_p = std::mem::replace(&mut self.page, p);
             self.history.push((cur_r, cur_p));
-            window.set_window_title(&format!("{} - Stream Tube", self.route.title()));
+            window.set_window_title(&format!("{} - {}", self.route.title(), crate::APP_NAME));
             cx.notify();
         }
     }
@@ -2594,7 +2594,7 @@ impl AppView {
                     .child(icon("sparkles").size_3p5().text_color(white()))
                     .child("New version"),
             )
-            .child(div().text_3xl().font_weight(FontWeight::BOLD).text_color(white()).child(format!("Stream Tube {version}")))
+            .child(div().text_3xl().font_weight(FontWeight::BOLD).text_color(white()).child(format!("{} {version}", crate::APP_NAME)))
             .child(div().text_sm().text_color(hsla(0., 0., 1., 0.85)).child(meta.join("  ·  ")));
 
         let mut body = div().flex().flex_col().gap_4().p_6();
@@ -2652,7 +2652,7 @@ impl AppView {
                                 ),
                         ),
                     )
-                    .child(div().text_xs().text_color(p.text2).child("Stream Tube restarts by itself when it's done.")),
+                    .child(div().text_xs().text_color(p.text2).child(format!("{} restarts by itself when it's done.", crate::APP_NAME))),
             );
             return div().flex().flex_col().child(hero).child(body).into_any_element();
         }
