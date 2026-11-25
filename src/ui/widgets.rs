@@ -110,11 +110,6 @@ struct Glide {
     shown: f32,
     target: f32,
     last: std::time::Instant,
-    /// the last wheel event came from a touchpad
-    precise: bool,
-    /// a mouse wheel moved the page since the last frame (anything else that
-    /// moves it, like dragging the scrollbar, is followed exactly)
-    wheel: Option<std::time::Instant>,
 }
 
 /// Scrolls the page on screen for PageUp/PageDown, Home/End, the arrow keys and
@@ -141,14 +136,13 @@ pub fn scroll_page_key(key: &str, shift: bool, window: &mut Window) -> bool {
     let now: f32 = handle.offset().y.into();
     GLIDES.with(|g| {
         let mut g = g.borrow_mut();
-        let st = g.entry(id).or_insert(Glide { shown: now, target: now, last: std::time::Instant::now(), precise: false, wheel: None });
+        let st = g.entry(id).or_insert(Glide { shown: now, target: now, last: std::time::Instant::now() });
         // from where it's already heading, so repeated presses add up
-        let in_flight = (st.target - now).abs() > 0.5 && !st.precise;
+        let in_flight = (st.target - now).abs() > 0.5;
         let from = if in_flight { st.target } else { now };
         if !in_flight {
             st.last = std::time::Instant::now();
         }
-        st.precise = false;
         st.target = (from + delta).clamp(-max.max(0.0), 0.0);
         st.shown = now;
     });
@@ -157,15 +151,16 @@ pub fn scroll_page_key(key: &str, shift: bool, window: &mut Window) -> bool {
 }
 
 /// Mouse-wheel scrolling that glides instead of jumping a fixed step per notch.
-/// gpui moves the page by the whole step; this notices the jump, keeps it as the
-/// target and eases the visible position there over the next frames. Touchpad
-/// scrolling is already smooth and passes through untouched.
+/// gpui applies the whole step while it dispatches the event; this takes that
+/// step back before anything is painted and eases the page across the whole
+/// distance, the way a browser glides a wheel notch. Touchpad deltas are already
+/// continuous and pass through untouched.
 fn smooth_scroll(id: &'static str, handle: Rc<dyn PageScrollHandle>) -> impl IntoElement {
     /// how quickly it settles: ~63% of the way every TAU
     const TAU: f32 = 0.045;
     /// mouse-wheel notches move a bit further than gpui's line step
     const WHEEL_BOOST: f32 = 1.4;
-    let wheel_handle = handle.clone();
+    let scroll_handle = handle.clone();
     canvas(
         move |_, window, _| {
             let now = std::time::Instant::now();
@@ -173,20 +168,12 @@ fn smooth_scroll(id: &'static str, handle: Rc<dyn PageScrollHandle>) -> impl Int
             let max: f32 = scroll_limit(handle.as_ref()).into();
             GLIDES.with(|g| {
                 let mut g = g.borrow_mut();
-                let st = g.entry(id).or_insert(Glide { shown: actual, target: actual, last: now, precise: false, wheel: None });
-                let wheel = st.wheel.take();
+                let st = g.entry(id).or_insert(Glide { shown: actual, target: actual, last: now });
                 let moved = actual - st.shown;
                 if moved.abs() > 0.01 {
-                    // something moved the page since the last frame
-                    let Some(wheel_at) = wheel.filter(|_| !st.precise && moved.abs() <= 3000.0) else {
-                        // touchpad, the scrollbar, or a jump (new page, scroll to top): follow it exactly
-                        *st = Glide { shown: actual, target: actual, last: now, precise: st.precise, wheel: None };
-                        return;
-                    };
-                    if (st.target - st.shown).abs() < 0.5 {
-                        st.last = wheel_at;
-                    }
-                    st.target += moved * WHEEL_BOOST;
+                    // touchpad, the scrollbar, or a jump (new page, scroll to top): follow it exactly
+                    *st = Glide { shown: actual, target: actual, last: now };
+                    return;
                 }
                 st.target = st.target.clamp(-max.max(0.0), 0.0);
                 let gap = st.target - st.shown;
@@ -204,16 +191,43 @@ fn smooth_scroll(id: &'static str, handle: Rc<dyn PageScrollHandle>) -> impl Int
             });
         },
         move |_, _, window, _| {
-            let wheel_handle = wheel_handle.clone();
-            window.on_mouse_event(move |ev: &ScrollEvent, phase, _, _| {
-                if phase == DispatchPhase::Capture && wheel_handle.viewport_bounds().contains(&ev.position) {
-                    GLIDES.with(|g| {
-                        if let Some(st) = g.borrow_mut().get_mut(id) {
-                            st.precise = ev.delta.precise();
-                            st.wheel.get_or_insert_with(std::time::Instant::now);
-                        }
-                    });
+            let handle = scroll_handle.clone();
+            window.on_mouse_event(move |ev: &ScrollEvent, phase, window, _| {
+                // Bubble: gpui's scroll area has already moved the page by the whole
+                // step, and scroll areas inside the page (nested_scroll) stop the
+                // event before it reaches us. Put the page back where it was drawn
+                // and let the easing above cover the whole distance instead.
+                if phase != DispatchPhase::Bubble
+                    || ev.delta.precise()
+                    || !handle.viewport_bounds().contains(&ev.position)
+                {
+                    return;
                 }
+                // Take the step gpui actually applied, so a notch keeps travelling
+                // the same distance it did before this change, whatever step the
+                // scroll area chose.
+                let max: f32 = scroll_limit(handle.as_ref()).into();
+                GLIDES.with(|g| {
+                    let mut g = g.borrow_mut();
+                    if let Some(st) = g.get_mut(id) {
+                        let applied: f32 = handle.offset().y.into() - st.shown;
+                        if applied.abs() < 0.01 {
+                            return;
+                        }
+                        let next = (st.target + applied * WHEEL_BOOST).clamp(-max.max(0.0), 0.0);
+                        if (next - st.target).abs() < 0.01 && (st.shown - next).abs() < 0.01 {
+                            return;
+                        }
+                        if (st.target - st.shown).abs() <= 0.5 {
+                            st.last = std::time::Instant::now();
+                        }
+                        handle.set_offset(point(handle.offset().x, px(st.shown)));
+                        st.target = next;
+                        // Not request_animation_frame: that needs a view being drawn,
+                        // and a wheel event arrives outside the render pass.
+                        window.refresh();
+                    }
+                });
             });
         },
     )
