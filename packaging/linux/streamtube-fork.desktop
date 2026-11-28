@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Stream Tube Fork
+GenericName=YouTube client
+Comment=Watch YouTube without ads, sponsor reads or a browser (fork build)
+Exec=streamtube %u
+Icon=streamtube-fork
+Terminal=false
+Categories=AudioVideo;Video;Player;Network;
+Keywords=youtube;video;player;
+MimeType=x-scheme-handler/streamtube;
+StartupWMClass=streamtube-fork

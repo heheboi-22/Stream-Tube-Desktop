@@ -1,4 +1,5 @@
 use crate::api::innertube::{self, EXPLORE};
+use crate::i18n::{t, tf};
 use crate::api::types::*;
 use crate::store;
 use crate::ui::cards::*;
@@ -8,6 +9,10 @@ use std::sync::Arc;
 
 /// Marks continuations of the signed-in home feed (they need the TV client).
 const ACCOUNT: &str = "acct:";
+/// Continuation of the account's music picks.
+const MUSIC: &str = "music:";
+/// The chip of the "Music" explore page.
+const MUSIC_CHIP: usize = 1;
 /// Marks continuations of the home feed loaded with the browser sign-in.
 const WEB: &str = "web:";
 
@@ -42,11 +47,18 @@ fn feed_source() -> &'static str {
     }
 }
 
+/// Bumped when the cached items change shape (a new field, a different reading of a
+/// tile), so a feed cached by an older version is not shown.
+const CACHE_VERSION: i64 = 2;
+
 /// The home feed from the last session, shown at once when the app starts while
 /// the new one loads. Kept for three days.
 fn cached_home() -> Option<Vec<Item>> {
     let v: serde_json::Value = serde_json::from_str(&store::kv_get("home_cache")?).ok()?;
-    if v.get("source")?.as_str()? != feed_source() || crate::api::json::now() - v.get("at")?.as_i64()? > 3 * 24 * 3600 {
+    if v.get("version").and_then(serde_json::Value::as_i64) != Some(CACHE_VERSION)
+        || v.get("source")?.as_str()? != feed_source()
+        || crate::api::json::now() - v.get("at")?.as_i64()? > 3 * 24 * 3600
+    {
         return None;
     }
     let items: Vec<Item> = serde_json::from_value(v.get("items")?.clone()).ok()?;
@@ -55,6 +67,7 @@ fn cached_home() -> Option<Vec<Item>> {
 
 fn save_home(items: &[Item]) {
     let v = serde_json::json!({
+        "version": CACHE_VERSION,
         "source": feed_source(),
         "at": crate::api::json::now(),
         "items": items.iter().take(60).collect::<Vec<_>>(),
@@ -113,7 +126,7 @@ fn recently_uploaded() -> anyhow::Result<Vec<Item>> {
         })
         .collect();
     if recent.is_empty() {
-        anyhow::bail!("No videos from the last {RECENT_DAYS} days in your feed yet. Sign in or subscribe to some channels to fill this up.");
+        anyhow::bail!("{}", tf!("No videos from the last {0} days in your feed yet. Sign in or subscribe to some channels to fill this up.", RECENT_DAYS));
     }
     recent.sort_by(|a, b| b.0.cmp(&a.0));
     Ok(recent
@@ -140,6 +153,8 @@ pub struct HomePage {
     rows: Arc<Vec<FeedRow>>,
     row_size: (Pixels, Pixels),
     serial: u64,
+    /// redraws the music mode button when the mode changes elsewhere
+    _music: Subscription,
 }
 
 #[derive(PartialEq)]
@@ -228,6 +243,11 @@ impl HomePage {
             rows: Arc::default(),
             row_size: (px(0.), px(0.)),
             serial: 0,
+            _music: cx.observe_global::<crate::ui::music::MusicMode>(|this, cx| {
+                if this.chip == MUSIC_CHIP {
+                    cx.notify();
+                }
+            }),
         };
         s.load(cx);
         s
@@ -250,6 +270,7 @@ impl HomePage {
                 from_cache = true;
             }
         }
+        let shown_at = std::time::Instant::now();
         cx.spawn(async move |this, cx| {
             let res = blocking(move || -> anyhow::Result<(Vec<Item>, Option<String>)> {
                 if chip == 0 && crate::api::web::connected() {
@@ -342,6 +363,14 @@ impl HomePage {
                     }
                     Ok((freshen(out), None))
                 } else {
+                    if chip == MUSIC_CHIP && crate::api::auth::signed_in() {
+                        // the account's own music picks, each opening as a mix
+                        if let Ok(p) = crate::api::auth::music() {
+                            if !p.items.is_empty() {
+                                return Ok((p.items, p.continuation.map(|c| format!("{MUSIC}{c}"))));
+                            }
+                        }
+                    }
                     let p = innertube::explore(EXPLORE[chip - 1].1)?;
                     Ok((p.items, p.continuation))
                 }
@@ -357,12 +386,15 @@ impl HomePage {
                         if chip == 0 && !items.is_empty() {
                             save_home(&items);
                         }
-                        // the cached feed stays if the user is already scrolling through it
+                        // the cached feed stays if the user is already scrolling through it,
+                        // or has been looking at it for a while: a slow fetch must not swap the
+                        // videos under the pointer (the new feed is saved for the next start)
                         let scrolled = this.scroll.scroll_px_offset_for_scrollbar().y < px(-40.);
-                        if !(from_cache && scrolled) {
+                        let settled = shown_at.elapsed() > std::time::Duration::from_secs(8);
+                        if !(from_cache && (scrolled || settled)) {
                             this.items = Load::Ready(Arc::new(items));
+                            this.continuation = cont;
                         }
-                        this.continuation = cont;
                     }
                     Err(_) if from_cache => {}
                     Err(e) => this.items = Load::Error(e.to_string()),
@@ -385,6 +417,12 @@ impl HomePage {
                 if let Some(t) = tok.strip_prefix(WEB) {
                     return crate::api::web::browse_continue(t).map(|mut p| {
                         p.continuation = p.continuation.map(|c| format!("{WEB}{c}"));
+                        p
+                    });
+                }
+                if let Some(t) = tok.strip_prefix(MUSIC) {
+                    return crate::api::auth::music_continue(t).map(|mut p| {
+                        p.continuation = p.continuation.map(|c| format!("{MUSIC}{c}"));
                         p
                     });
                 }
@@ -454,17 +492,17 @@ impl Render for HomePage {
         let p = pal(cx);
         let s = store::settings_snapshot();
         let rem = window.rem_size();
-        let width = content_width(cx) + px(48.) - rem * 3.0;
-        let (columns, card_width) = grid_columns_with_gap(width, 300.0, rem);
+        let width = content_width(cx);
+        let (columns, card_width) = grid_columns(width, 300.0, rem);
         let mut chips = div().flex().gap_3().py_3().px_6().bg(p.bg).child(
             chip(
                 "chip-all",
                 if crate::api::auth::signed_in() || crate::api::web::connected() || !store::subscriptions().is_empty() {
-                    "All"
+                    t("All")
                 } else if crate::recommend::available() {
-                    "For you"
+                    t("For you")
                 } else {
-                    "Popular"
+                    t("Popular")
                 },
                 self.chip == 0,
                 cx,
@@ -474,19 +512,26 @@ impl Render for HomePage {
                     this.load(cx);
                 })),
         );
-        chips = chips.child(chip("chip-recent", "Recently uploaded", self.chip == RECENT, cx).on_click(cx.listener(|this, _, _, cx| {
+        chips = chips.child(chip("chip-recent", t("Recently uploaded"), self.chip == RECENT, cx).on_click(cx.listener(|this, _, _, cx| {
             this.chip = RECENT;
             this.load(cx);
         })));
         if !s.hide_explore {
             for (i, (name, _)) in EXPLORE.iter().enumerate() {
-                chips = chips.child(chip(SharedString::from(format!("chip-{i}")), *name, self.chip == i + 1, cx).on_click(cx.listener(
+                chips = chips.child(chip(SharedString::from(format!("chip-{i}")), t(name), self.chip == i + 1, cx).on_click(cx.listener(
                     move |this, _, _, cx| {
                         this.chip = i + 1;
                         this.load(cx);
                     },
                 )));
             }
+        }
+        if self.chip == MUSIC_CHIP {
+            let on = crate::ui::music::on(cx);
+            chips = chips.child(div().flex_1()).child(
+                chip("chip-music-mode", t(if on { "Leave music mode" } else { "Music mode" }), on, cx)
+                    .on_click(move |_, _, cx| crate::ui::music::set(!on, cx)),
+            );
         }
         let message = |content: AnyElement| {
             div().absolute().inset_0().px_6().pt_2().pb_24().child(content).into_any_element()
