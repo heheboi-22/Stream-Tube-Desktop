@@ -1396,6 +1396,20 @@ impl WatchPage {
             col = col.child(spinner(cx));
         }
         if let Some(panel_h) = sidebar_h {
+            let sb_mode = if store::settings_snapshot().always_scrollbars {
+                gpui_kit::component::scroll::ScrollbarMode::Always
+            } else {
+                gpui_kit::component::scroll::ScrollbarMode::Hover
+            };
+            let list = div()
+                .id("watch-comments-scroll")
+                .absolute()
+                .inset_0()
+                .overflow_y_scroll()
+                .track_scroll(&self.comments_scroll)
+                .px_3()
+                .py_3()
+                .child(col);
             div()
                 .flex()
                 .flex_col()
@@ -1406,15 +1420,19 @@ impl WatchPage {
                 .overflow_hidden()
                 .child(header)
                 .child(
-                    div()
-                        .id("watch-comments-scroll")
+                    nested_scroll("watch-comments-wrap", list)
+                        .relative()
                         .flex_1()
                         .min_h_0()
-                        .overflow_y_scroll()
-                        .track_scroll(&self.comments_scroll)
-                        .px_3()
-                        .py_3()
-                        .child(col),
+                        .overflow_hidden()
+                        .child(
+                            div().absolute().inset_0().child(
+                                gpui_kit::component::scroll::Scrollbar::vertical(&self.comments_scroll)
+                                    .id("watch-comments-scrollbar")
+                                    .mode(sb_mode)
+                                    .viewport_from_layout(),
+                            ),
+                        ),
                 )
                 .into_any_element()
         } else {
