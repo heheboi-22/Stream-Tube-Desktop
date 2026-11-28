@@ -63,6 +63,7 @@ pub struct WatchPage {
     replies: HashMap<String, Load<(Vec<Comment>, Option<String>)>>,
     related_more_loading: bool,
     scroll: ScrollHandle,
+    comments_scroll: ScrollHandle,
     local_playlist: Option<(i64, String, Vec<VideoItem>)>,
     /// the queue list; it opens scrolled to the video playing (each video is a
     /// new page, so its scroll position isn't kept)
@@ -165,6 +166,7 @@ impl WatchPage {
             replies: HashMap::new(),
             related_more_loading: false,
             scroll: ScrollHandle::new(),
+            comments_scroll: ScrollHandle::new(),
             local_playlist,
             queue_scroll,
             queue_scrolled_to,
@@ -1248,7 +1250,7 @@ impl WatchPage {
         el
     }
 
-    fn render_comments(&mut self, w: &WatchInfo, cx: &mut Context<Self>) -> AnyElement {
+    fn render_comments(&mut self, w: &WatchInfo, sidebar_h: Option<Pixels>, cx: &mut Context<Self>) -> AnyElement {
         let p = pal(cx);
         if store::settings_snapshot().hide_comments {
             return div().into_any_element();
@@ -1264,39 +1266,55 @@ impl WatchPage {
         let sort_new = self.comment_sort_new;
         let timed = self.comment_timed;
         let (top, new) = (data.sort_top_token.clone(), data.sort_new_token.clone());
-        let mut col = div().flex().flex_col().gap_6().pt_6().child(
+        let compact = sidebar_h.is_some();
+        let count_label = {
+            let n = data.count_text.clone().or(w.comment_count_text.clone()).unwrap_or_default();
+            if n.to_lowercase().contains("comment") { n } else { tf!("{0} Comments", n).trim().to_string() }
+        };
+        let sort_chips = div()
+            .flex()
+            .flex_wrap()
+            .gap_2()
+            .when_some(top, |d, t| {
+                d.child(chip("c-top", translate("Top"), !sort_new && !timed, cx).on_click(cx.listener(move |this, _, _, cx| {
+                    this.comment_sort_new = false;
+                    this.set_timed(false, cx);
+                    this.load_comments(t.clone(), false, cx);
+                })))
+            })
+            .child(chip("c-timed", translate("Timed"), timed, cx).on_click(cx.listener(|this, _, _, cx| {
+                let on = !this.comment_timed;
+                this.set_timed(on, cx);
+            })))
+            .when_some(new, |d, t| {
+                d.child(chip("c-new", translate("Newest"), sort_new && !timed, cx).on_click(cx.listener(move |this, _, _, cx| {
+                    this.comment_sort_new = true;
+                    this.set_timed(false, cx);
+                    this.load_comments(t.clone(), false, cx);
+                })))
+            });
+        let header = if compact {
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .px_3()
+                .py_2()
+                .border_b_1()
+                .border_color(p.border)
+                .child(div().text_base().font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(count_label))
+                .child(sort_chips)
+        } else {
             div()
                 .flex()
                 .items_center()
                 .gap_6()
-                .child(div().text_xl().font_weight(FontWeight::BOLD).text_color(p.text).child({
-                    let n = data.count_text.clone().or(w.comment_count_text.clone()).unwrap_or_default();
-                    if n.to_lowercase().contains("comment") { n } else { tf!("{0} Comments", n).trim().to_string() }
-                }))
-                .child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .when_some(top, |d, t| {
-                            d.child(chip("c-top", translate("Top"), !sort_new && !timed, cx).on_click(cx.listener(move |this, _, _, cx| {
-                                this.comment_sort_new = false;
-                                this.set_timed(false, cx);
-                                this.load_comments(t.clone(), false, cx);
-                            })))
-                        })
-                        .child(chip("c-timed", translate("Timed"), timed, cx).on_click(cx.listener(|this, _, _, cx| {
-                            let on = !this.comment_timed;
-                            this.set_timed(on, cx);
-                        })))
-                        .when_some(new, |d, t| {
-                            d.child(chip("c-new", translate("Newest"), sort_new && !timed, cx).on_click(cx.listener(move |this, _, _, cx| {
-                                this.comment_sort_new = true;
-                                this.set_timed(false, cx);
-                                this.load_comments(t.clone(), false, cx);
-                            })))
-                        }),
-                ),
-        );
+                .child(div().text_xl().font_weight(FontWeight::BOLD).text_color(p.text).child(count_label))
+                .child(sort_chips)
+        };
+        let mut col = div().flex().flex_col().gap(if compact { px(16.) } else { px(24.) });
         if let Some(editor) = self.comment_editor(None, cx) {
             col = col.child(editor);
         } else if let Some(params) = data.create_params.clone().filter(|_| self.comment_account().is_some()) {
@@ -1377,7 +1395,31 @@ impl WatchPage {
         if data.continuation.is_some() && self.comments_more_loading {
             col = col.child(spinner(cx));
         }
-        col.into_any_element()
+        if let Some(panel_h) = sidebar_h {
+            div()
+                .flex()
+                .flex_col()
+                .h(panel_h)
+                .rounded_xl()
+                .border_1()
+                .border_color(p.border)
+                .overflow_hidden()
+                .child(header)
+                .child(
+                    div()
+                        .id("watch-comments-scroll")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.comments_scroll)
+                        .px_3()
+                        .py_3()
+                        .child(col),
+                )
+                .into_any_element()
+        } else {
+            div().flex().flex_col().gap_6().pt_6().child(header).child(col).into_any_element()
+        }
     }
 
     /// YouTube's "In this video" panel: every chapter, the one playing marked,
@@ -1882,21 +1924,6 @@ impl Render for WatchPage {
         let ui = *cx.global::<UiState>();
         let settings = store::settings_snapshot();
         let theater = settings.theater_mode;
-        // infinite scroll: comments, then related
-        if near_bottom(&self.scroll, 600.0) {
-            if let Some(Load::Ready(c)) = &self.comments {
-                if let (Some(tok), false) = (c.continuation.clone(), self.comments_more_loading) {
-                    self.comments_more_loading = true;
-                    let t = tok.clone();
-                    cx.defer_in_entity(move |this, cx| this.load_comments(t, true, cx));
-                }
-            }
-            let has_rel = self.info.ready().map(|w| w.related_continuation.is_some()).unwrap_or(false);
-            if has_rel && !self.related_more_loading {
-                self.related_more_loading = true;
-                cx.defer_in_entity(|this, cx| this.load_more_related(cx));
-            }
-        }
         if ui.fullscreen {
             return div().size_full().bg(black()).child(crate::ui::slot::player_slot(cx)).into_any_element();
         }
@@ -1907,6 +1934,25 @@ impl Render for WatchPage {
         let avail = vp.width - px(48.);
         let side_w = px(402.);
         let two_col = avail > px(1000.);
+        let swap_layout = settings.swap_comments_related && !theater && two_col;
+        // infinite scroll: comments, then related
+        let comments_near_bottom = if swap_layout { near_bottom(&self.comments_scroll, 300.0) } else { near_bottom(&self.scroll, 600.0) };
+        if comments_near_bottom {
+            if let Some(Load::Ready(c)) = &self.comments {
+                if let (Some(tok), false) = (c.continuation.clone(), self.comments_more_loading) {
+                    self.comments_more_loading = true;
+                    let t = tok.clone();
+                    cx.defer_in_entity(move |this, cx| this.load_comments(t, true, cx));
+                }
+            }
+        }
+        if near_bottom(&self.scroll, 600.0) {
+            let has_rel = self.info.ready().map(|w| w.related_continuation.is_some()).unwrap_or(false);
+            if has_rel && !self.related_more_loading {
+                self.related_more_loading = true;
+                cx.defer_in_entity(|this, cx| this.load_more_related(cx));
+            }
+        }
         // the main column grows with the window, as long as the player still fits
         // below the top bar with the start of the title showing (#230)
         let max_primary = ((vp.height - px(56. + 120.)) * (16. / 9.)).max(px(1280.));
@@ -1917,6 +1963,7 @@ impl Render for WatchPage {
         } else {
             primary_w * (9. / 16.)
         };
+        let comments_panel_h = (vp.height - px(96.)).max(px(480.));
         let info = match &self.info {
             Load::Ready(w) => Some(w.clone()),
             _ => None,
@@ -1924,8 +1971,12 @@ impl Render for WatchPage {
         let primary_info: AnyElement = match (&self.info, &info) {
             (_, Some(w)) => {
                 let i = self.render_info(w, cx);
-                let c = self.render_comments(w, cx);
-                div().flex().flex_col().child(i).child(c).into_any_element()
+                let below = if swap_layout {
+                    div().pt_4().child(self.render_related(w, cx)).into_any_element()
+                } else {
+                    self.render_comments(w, None, cx)
+                };
+                div().flex().flex_col().child(i).child(below).into_any_element()
             }
             (Load::Error(e), _) => selectable_text("watch-err", tf!("Could not load video details: {0}", e)).py_4().text_color(p.text2).into_any_element(),
             _ => spinner(cx).into_any_element(),
@@ -1933,7 +1984,13 @@ impl Render for WatchPage {
         let chapters_panel = self.render_chapters_panel(cx);
         let queue_panel = self.render_queue_panel(window, cx);
         let chat_panel = self.render_chat(window, cx);
-        let related = info.as_ref().map(|w| self.render_related(w, cx));
+        let sidebar_bottom = info.as_ref().map(|w| {
+            if swap_layout {
+                self.render_comments(w, Some(comments_panel_h), cx)
+            } else {
+                self.render_related(w, cx)
+            }
+        });
         let secondary = div()
             .flex()
             .flex_col()
@@ -1942,7 +1999,7 @@ impl Render for WatchPage {
             .children(chapters_panel)
             .children(chat_panel)
             .children(queue_panel)
-            .children(related);
+            .children(sidebar_bottom);
         // ambient mode: a soft glow in the picture's colours around the player
         let glow = (!theater && settings.ambient_mode)
             .then(|| crate::player::controller::player(cx).read(cx).ambient)

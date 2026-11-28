@@ -128,6 +128,8 @@ pub struct Settings {
     pub independent_tab_playback: bool,
     // Tweaks (from YouTube patch sets like Morphe/ReVanced)
     pub ambient_mode: bool,
+    /// show comments in the right sidebar and Up next below the player (normal 2-column mode)
+    pub swap_comments_related: bool,
     pub shorts_in_player: bool,
     pub shorts_autoadvance: bool,
     pub shorts_preload: u8,
@@ -265,6 +267,7 @@ impl Default for Settings {
             background_play: true,
             independent_tab_playback: false,
             ambient_mode: true,
+            swap_comments_related: false,
             shorts_in_player: false,
             shorts_autoadvance: false,
             shorts_preload: 1,

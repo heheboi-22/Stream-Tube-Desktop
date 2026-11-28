@@ -617,6 +617,12 @@ impl SettingsPage {
                 .child(row("Show Subscribe button", "", switch("shsub", s.shorts_show_subscribe, |s, v| s.shorts_show_subscribe = v, cx), cx))
                 .child(row("Show Dislike button", "", switch("shdis", s.shorts_show_dislike, |s, v| s.shorts_show_dislike = v, cx), cx))
             })
+            .child(row(
+                "Swap comments and Up next",
+                "Show comments beside the video in a scrollable sidebar and move Up next below (normal mode)",
+                switch("swcr", s.swap_comments_related, |s, v| s.swap_comments_related = v, cx),
+                cx,
+            ))
             .child(row("Remember last quality", "Use the quality you picked last as the default", switch("rq", s.remember_quality, |s, v| s.remember_quality = v, cx), cx))
             .child(row("Double-click for fullscreen", "", switch("dcf", s.double_click_fullscreen, |s, v| s.double_click_fullscreen = v, cx), cx))
             .child(row("Exit fullscreen when a video ends", "", switch("efe", s.exit_fullscreen_at_end, |s, v| s.exit_fullscreen_at_end = v, cx), cx))
